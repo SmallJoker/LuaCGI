@@ -36,7 +36,7 @@ File: conf\mime.types (optional .. ??)
 File: <html root>\test.lua
 >	<h1>Testing LuaCGI</h1>
 >	Total Lua run time: <?lua return os.clock() .. " seconds" ?><br />
->	Lazyness is king, ignoring closing block on <?lua return "file end."
+>	Your useragent is <?lua return HEAD.HTTP_USER_AGENT
 
 
  TODO
