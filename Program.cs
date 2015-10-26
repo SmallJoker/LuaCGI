@@ -41,6 +41,7 @@ namespace LuaCGI
 
 		ScriptEngine L;
 		TcpListener host;
+		StringBuilder packet;
 
 		Encoding enc_head = Encoding.ASCII,
 			enc_file = Encoding.UTF8;
@@ -114,6 +115,7 @@ namespace LuaCGI
 				Console.WriteLine("Loading file: " + path);
 
 				L.ResetLua();
+				L.RegisterLuaFunction(l_print, "print");
 				#region Add all HTTP headers to table HEAD
 				L.CreateLuaTable("HEAD");
 				Lua.lua_getglobal(L.L, "HEAD");
@@ -122,14 +124,14 @@ namespace LuaCGI
 				Lua.lua_pop(L.L, 1);
 				#endregion
 
-				StringBuilder sb = new StringBuilder(1024);
-				sb.Append("Connection: close\n");
-				sb.Append("Content-Type:	 text/html; charset=UTF-8\n\n");
+				packet = new StringBuilder(1024);
+				packet.Append("Connection: close\n");
+				packet.Append("Content-Type:	 text/html; charset=UTF-8\n\n");
 
-				ParseHTML(ref sb, path);
+				ParseHTML(path);
 				L.CloseLua();
 
-				byte[] content_l = enc_file.GetBytes(sb.ToString());
+				byte[] content_l = enc_file.GetBytes(packet.ToString());
 				cli.Send(MakeHead(CGI_RID, content_l.Length));
 				cli.Send(content_l);
 
@@ -143,6 +145,13 @@ namespace LuaCGI
 				TimeSpan diff = clock1 - clock0;
 				Console.WriteLine("\tExecution took " + diff.Milliseconds + " ms");
 			}
+		}
+
+		int l_print(IntPtr ptr)
+		{
+			string text = Lua.lua_tostring(ptr, -1);
+			packet.AppendLine(text);
+			return 0;
 		}
 
 		byte[] MakeHead(ushort requestId, int content_l)
@@ -167,7 +176,7 @@ namespace LuaCGI
 			return enc_head.GetString(data);
 		}
 
-		void ParseHTML(ref StringBuilder sb, string path)
+		void ParseHTML(string path)
 		{
 			char[] content = enc_file.GetChars(System.IO.File.ReadAllBytes(path));
 
@@ -211,11 +220,11 @@ namespace LuaCGI
 
 				// Not sent HTML above Lua block
 				if (last_end == 0) {
-					sb.Append(content, 0, lua_start - 6);
+					packet.Append(content, 0, lua_start - 6);
 				} else {
 					int leftover = lua_start - last_end - 9;
 					if (leftover > 0)
-						sb.Append(content, last_end + 3, leftover);
+						packet.Append(content, last_end + 3, leftover);
 				}
 
 				// Ignore empty Lua blocks
@@ -230,11 +239,11 @@ namespace LuaCGI
 				string output = Lua.lua_tostring(L.L, -1);
 
 				if (err > 0) {
-					sb.Append("<pre>Lua error near line: " + lua_line + "\n");
-					sb.Append(System.Security.SecurityElement.Escape(output));
-					sb.Append("</pre>");
+					packet.Append("<pre>Lua error near line: " + lua_line + "\n");
+					packet.Append(System.Security.SecurityElement.Escape(output));
+					packet.Append("</pre>");
 				} else if (output != null) {
-					sb.Append(output);
+					packet.Append(output);
 				}
 				#endregion
 
@@ -243,12 +252,12 @@ namespace LuaCGI
 
 			// End of file
 			if (last_end == 0) {
-				sb.Append(content, 0, content.Length);
+				packet.Append(content, 0, content.Length);
 			} else {
 				int start = last_end + 3;
 				int leftover = content.Length - start;
 				if (leftover > 0)
-					sb.Append(content, start, leftover);
+					packet.Append(content, start, leftover);
 			}
 		}
 	}
