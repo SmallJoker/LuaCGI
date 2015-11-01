@@ -45,6 +45,7 @@ namespace LuaCGI
 		StringBuilder packet;
 
 		Encoding enc = Encoding.UTF8;
+		bool packet_lock;
 
 		public Engine()
 		{
@@ -174,6 +175,7 @@ namespace LuaCGI
 				packet.Append("Connection: close\n");
 				packet.Append("Content-Type:	 text/html; charset=UTF-8\n\n");
 
+				packet_lock = false;
 				ParseHTML(path);
 				L.CloseLua();
 
@@ -195,8 +197,14 @@ namespace LuaCGI
 
 		int l_print(IntPtr ptr)
 		{
+			while (packet_lock)
+				System.Threading.Thread.Sleep(5);
+			packet_lock = true;
+
 			string text = Lua.lua_tostring(ptr, -1);
 			packet.AppendLine(text);
+
+			packet_lock = false;
 			return 0;
 		}
 
@@ -289,6 +297,10 @@ namespace LuaCGI
 				int err = Lua.luaL_dostring(L.L, run);
 				string output = Lua.lua_tostring(L.L, -1);
 
+				while (packet_lock)
+					System.Threading.Thread.Sleep(5);
+				packet_lock = true;
+
 				if (err > 0) {
 					packet.Append("<pre>Lua error near line: " + lua_line + "\n");
 					packet.Append(System.Security.SecurityElement.Escape(output));
@@ -296,6 +308,8 @@ namespace LuaCGI
 				} else if (output != null) {
 					packet.Append(output);
 				}
+
+				packet_lock = false;
 				#endregion
 
 				last_end = lua_end;
