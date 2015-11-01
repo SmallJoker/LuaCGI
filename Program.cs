@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 using System;
 using System.Text;
 using System.Net.Sockets;
+using System.Collections.Generic;
 using Tuxen.Utilities.Lua;
 
 namespace LuaCGI
@@ -43,8 +44,7 @@ namespace LuaCGI
 		TcpListener host;
 		StringBuilder packet;
 
-		Encoding enc_head = Encoding.ASCII,
-			enc_file = Encoding.UTF8;
+		Encoding enc = Encoding.UTF8;
 
 		public Engine()
 		{
@@ -57,7 +57,6 @@ namespace LuaCGI
 
 		void Listen()
 		{
-			System.Collections.Generic.Dictionary<string, string> headers;
 			while (true) {
 				#region Accept stream
 				Socket cli = host.AcceptSocket();
@@ -82,7 +81,7 @@ namespace LuaCGI
 
 				#endregion
 				#region Parse FastCGI
-				byte[] buf = new byte[Math.Min(1024, cli.ReceiveBufferSize)];
+				byte[] buf = new byte[cli.ReceiveBufferSize];
 				cli.Receive(buf, 0, buf.Length, SocketFlags.None);
 
 				// Read CGI protocol information (partwise)
@@ -90,8 +89,11 @@ namespace LuaCGI
 					CGI_TYP = buf[1];
 				ushort CGI_RID = (ushort)(buf[4] << 8 | buf[3]);
 
-				headers = new System.Collections.Generic.Dictionary<string, string>();
+				Dictionary<string, string> headers = new Dictionary<string, string>(),
+					head_GET = new Dictionary<string, string>(),
+					head_POST = new Dictionary<string, string>();
 
+				#region Read header fields
 				// Magical index where header fields start being sent
 				int offset = 24;
 				while (offset < buf.Length) {
@@ -107,19 +109,63 @@ namespace LuaCGI
 
 					headers[key] = value;
 				}
+				#endregion
+
+				#region Get GET data
+				if (headers["QUERY_STRING"].Length > 0)
+					ParseGET(headers["QUERY_STRING"], ref head_GET);
+				#endregion
+
+				int old_offset = offset;
+				#region Get POST data
+				if (headers.ContainsKey("CONTENT_TYPE")) {
+					offset += 15;
+					int data_length = buf[offset] << 8 | buf[offset + 1];
+					offset += 4;
+					string data = ReadString(ref buf, ref offset, data_length);
+
+					string content_type = headers["CONTENT_TYPE"];
+					if (content_type.StartsWith("multipart/form-data")) {
+						// Encoded binary data
+						int boundary_start = content_type.IndexOf("boundary=", StringComparison.Ordinal);
+						string boundary = content_type.Remove(0, boundary_start + 9);
+
+						// TODO: Parse that data, splitting by '\n'
+					} else {
+						// GET-Like data
+						ParseGET(data, ref head_POST);
+					}
+				}
+				#endregion
+
 				buf = null;
 				#endregion
 
-				string path = headers["DOCUMENT_ROOT"] + headers["SCRIPT_NAME"];
-				path = Uri.UnescapeDataString(path.Replace('/', '\\'));
+				string path = headers["SCRIPT_FILENAME"].Replace('/', '\\');
 				Console.WriteLine("Loading file: " + path);
 
 				L.ResetLua();
 				L.RegisterLuaFunction(l_print, "print");
-				#region Add all HTTP headers to table HEAD
+
+				#region Global Lua tables
+				// HTTP Headers
 				L.CreateLuaTable("HEAD");
 				Lua.lua_getglobal(L.L, "HEAD");
-				foreach (System.Collections.Generic.KeyValuePair<string, string> e in headers)
+				foreach (KeyValuePair<string, string> e in headers)
+					L.SetTableField(e.Key, e.Value);
+				Lua.lua_pop(L.L, 1);
+
+				// GET data
+				L.CreateLuaTable("GET");
+				Lua.lua_getglobal(L.L, "GET");
+				foreach (KeyValuePair<string, string> e in head_GET)
+					L.SetTableField(e.Key, e.Value);
+				Lua.lua_pop(L.L, 1);
+
+				// POST data
+				L.CreateLuaTable("POST");
+				Lua.lua_getglobal(L.L, "POST");
+				foreach (KeyValuePair<string, string> e in head_POST)
 					L.SetTableField(e.Key, e.Value);
 				Lua.lua_pop(L.L, 1);
 				#endregion
@@ -131,7 +177,7 @@ namespace LuaCGI
 				ParseHTML(path);
 				L.CloseLua();
 
-				byte[] content_l = enc_file.GetBytes(packet.ToString());
+				byte[] content_l = enc.GetBytes(packet.ToString());
 				cli.Send(MakeHead(CGI_RID, content_l.Length));
 				cli.Send(content_l);
 
@@ -173,12 +219,17 @@ namespace LuaCGI
 			byte[] data = new byte[count];
 			System.Buffer.BlockCopy(buf, offset, data, 0, count);
 			offset += count;
-			return enc_head.GetString(data);
+			return enc.GetString(data);
 		}
 
 		void ParseHTML(string path)
 		{
-			char[] content = enc_file.GetChars(System.IO.File.ReadAllBytes(path));
+			if (!System.IO.File.Exists(path)) {
+				packet.Append("<h1>404 - Not found</h1>The file was not found on this server.");
+				return;
+			}
+
+			char[] content = enc.GetChars(System.IO.File.ReadAllBytes(path));
 
 			int pos = 0,			/* File reading index */
 				lua_start = -1,	/* Start index of Lua block */
@@ -260,5 +311,21 @@ namespace LuaCGI
 					packet.Append(content, start, leftover);
 			}
 		}
+
+		void ParseGET(string query, ref Dictionary<string, string> dst)
+		{
+			string[] args = query.Split('&');
+			foreach (string arg in args) {
+				string[] key_value = arg.Split('=');
+
+				if (key_value.Length == 2) {
+					dst[key_value[0]] = key_value[1];
+					continue;
+				}
+				dst[key_value[0]] = "";
+			}
+		}
+
+		//void ParsePOST(string data, ref int offset)
 	}
 }
